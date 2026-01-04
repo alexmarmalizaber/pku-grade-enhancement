@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         PKU Grade Enhancement (v6.0)
+// @name         PKU Grade Enhancement (v7.0)
 // @namespace    http://tampermonkey.net/
-// @version      6.0
+// @version      7.0
 // @description  北大成绩单页面美化+统计分析+模拟计算 (经典配色版)
 // @author       ttqqjj.smser
 // @match        *://treehole.pku.edu.cn/*
@@ -781,13 +781,23 @@
         }
 
         .rainbow-moving {
-            background: linear-gradient(-45deg,#c5fcc5,#ffd1d1,#d1d1ff,#c5fcc5,#ffd1d1,#d1d1ff,#c5fcc5,#ffd1d1,#d1d1ff,#c5fcc5,#ffd1d1,#d1d1ff,#c5fcc5) 0 0 !important;
-            background-size: 1800px 200px !important;
-            animation: rainbow-moving 5s linear infinite !important;
+            position: relative !important;
+            overflow: hidden !important;
+            background: none !important;
+            z-index: 0 !important;
         }
-        @keyframes rainbow-moving {
-            0% { background-position-x: 0; }
-            100% { background-position-x: -1000px; }
+        .rainbow-moving::before {
+            content: "" !important;
+            position: absolute !important;
+            top: 0; left: 0; bottom: 0;
+            width: calc(100% + 600px) !important;
+            z-index: -1 !important;
+            background: repeating-linear-gradient(-45deg, #c5fcc5 0, #ffd1d1 120px, #d1d1ff 240px, #c5fcc5 360px) !important;
+            animation: rainbow-slide 1s linear infinite !important;
+        }
+        @keyframes rainbow-slide {
+            0% { transform: translateX(0); }
+            100% { transform: translateX(-509.12px); }
         }
 
         .gm-credit-cell {
