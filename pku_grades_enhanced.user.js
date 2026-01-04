@@ -19,8 +19,8 @@
     // ==========================================
     const GRADE_MAP = {
         'P': null, 'NP': null, 'EX': null, 'IP': null, 'I': null, 'W': null,
-        'A+': 4, 'A': 4, 'A-': 3.7, 'B+': 3.3, 'B': 3, 'B-': 2.7,
-        'C+': 2.3, 'C': 2, 'C-': 1.7, 'D+': 1.3, 'D': 1, 'F': null
+        'A+': 4, 'A': 3.9, 'A-': 3.7, 'B+': 3.3, 'B': 3.4, 'B-': 2.7,
+        'C+': 2.3, 'C': 2.5, 'C-': 1.7, 'D+': 1.3, 'D': 1.5, 'F': 0
     };
 
     const SPECIAL_TEXT = {
@@ -67,6 +67,12 @@
 
     function isFail(score) {
         return score === 'NP' || score === 'F' || (typeof score === 'number' && score < 60);
+    }
+
+    function isEarnedCredit(score) {
+        if (score === 'P' || score === 'EX') return true;
+        let gpa = scoreToGPA(score);
+        return gpa !== null && gpa > 0;
     }
 
     function getTitleColor(score, useGPA) {
@@ -145,6 +151,9 @@
         // 支持模拟模式的输入框
         let input = rightDiv.querySelector('input.sim-input');
         if (input) return parseScore(input.value);
+
+        let select = rightDiv.querySelector('select.sim-input');
+        if (select) return parseScore(select.value);
         
         return parseScore(rightDiv.textContent);
     }
@@ -286,7 +295,7 @@
         if (!titleRow.querySelector('.gm-credit-cell')) {
             let totalCredit = 0;
             courseData.forEach(c => {
-                if (c.score !== 'W' && c.score !== 'I') totalCredit += c.credit;
+                if (isEarnedCredit(c.score)) totalCredit += c.credit;
             });
             let creditCell = document.createElement('div');
             creditCell.className = 'layout-row-left gm-credit-cell';
@@ -374,10 +383,7 @@
         if (!titleRow.querySelector('.gm-credit-cell')) {
             let totalCredit = 0;
             allCourseData.forEach(c => {
-                let gpa = scoreToGPA(c.score);
-                if (gpa !== null || c.score === 'P' || c.score === 'EX') {
-                    if (c.score !== 'W') totalCredit += c.credit;
-                }
+                if (isEarnedCredit(c.score)) totalCredit += c.credit;
             });
             let creditCell = document.createElement('div');
             creditCell.className = 'layout-row-left gm-credit-cell';
@@ -475,6 +481,16 @@
                 let rightDown = titleRow.querySelector('.layout-row-right .layout-vertical-down');
                 if (rightUp) rightUp.textContent = avgGPA !== null ? avgGPA.toFixed(2) : '-.--';
                 if (rightDown) rightDown.textContent = avg100 !== null ? formatNumber(avg100, 1) : '-.--';
+
+                // 更新学分
+                let creditUp = titleRow.querySelector('.gm-credit-cell .layout-vertical-up');
+                if (creditUp) {
+                    let totalCredit = 0;
+                    courseData.forEach(c => {
+                        if (isEarnedCredit(c.score)) totalCredit += c.credit;
+                    });
+                    creditUp.textContent = formatNumber(totalCredit, 1);
+                }
             }
         });
 
@@ -488,6 +504,16 @@
                 titleRow.style.backgroundColor = getTitleColor(avg100, useGPAMode);
                 let rightDown = titleRow.querySelector('.layout-row-right .layout-vertical-down');
                 if (rightDown) rightDown.textContent = avg100 !== null ? formatNumber(avg100, 1) : '-.--';
+
+                // 更新总学分
+                let creditUp = titleRow.querySelector('.gm-credit-cell .layout-vertical-up');
+                if (creditUp) {
+                    let totalCredit = 0;
+                    allCourseData.forEach(c => {
+                        if (isEarnedCredit(c.score)) totalCredit += c.credit;
+                    });
+                    creditUp.textContent = formatNumber(totalCredit, 1);
+                }
             }
         }
 
@@ -501,29 +527,61 @@
     function toggleSimulation() {
         isSimulating = !isSimulating;
         let btn = document.getElementById('gm-sim-toggle');
+
         if (btn) {
             btn.innerHTML = isSimulating ? '<span class="icon icon-check"></span> 完成模拟' : '<span class="icon icon-edit"></span> 开启模拟';
             if (isSimulating) btn.classList.add('active');
             else btn.classList.remove('active');
         }
 
+        const LETTER_GRADES = ['A+', 'A', 'A-', 'B+', 'B', 'B-', 'C+', 'C', 'C-', 'D+', 'D', 'F'];
+        const PF_GRADES = ['P', 'NP'];
+
         document.querySelectorAll('.course-row .layout-row-right .layout-vertical-up').forEach(el => {
             if (isSimulating) {
                 let currentScore = parseScore(el.textContent);
-                if (typeof currentScore === 'number') {
+                if (currentScore !== null) {
                     el.dataset.origScore = el.textContent;
-                    el.innerHTML = `<input type="number" class="sim-input" value="${currentScore}" step="1" min="0" max="100">`;
-                    let input = el.querySelector('input');
-                    input.addEventListener('input', recalculateAll);
-                    input.addEventListener('click', e => e.stopPropagation());
+                    
+                    if (typeof currentScore === 'number') {
+                        el.innerHTML = `<input type="number" class="sim-input" value="${currentScore}" step="1" min="0" max="100" style="width: 60px; text-align: center;">`;
+                        let input = el.querySelector('input');
+                        input.addEventListener('input', recalculateAll);
+                        input.addEventListener('click', e => e.stopPropagation());
+                    } else if (LETTER_GRADES.includes(currentScore)) {
+                        let selectHtml = `<select class="sim-input" style="width: 60px;">`;
+                        LETTER_GRADES.forEach(opt => {
+                            let selected = opt === currentScore ? 'selected' : '';
+                            selectHtml += `<option value="${opt}" ${selected}>${opt}</option>`;
+                        });
+                        selectHtml += `</select>`;
+                        el.innerHTML = selectHtml;
+                        let select = el.querySelector('select');
+                        select.addEventListener('change', recalculateAll);
+                        select.addEventListener('click', e => e.stopPropagation());
+                    } else if (PF_GRADES.includes(currentScore)) {
+                        let selectHtml = `<select class="sim-input" style="width: 60px;">`;
+                        PF_GRADES.forEach(opt => {
+                            let selected = opt === currentScore ? 'selected' : '';
+                            selectHtml += `<option value="${opt}" ${selected}>${opt}</option>`;
+                        });
+                        selectHtml += `</select>`;
+                        el.innerHTML = selectHtml;
+                        let select = el.querySelector('select');
+                        select.addEventListener('change', recalculateAll);
+                        select.addEventListener('click', e => e.stopPropagation());
+                    }
+                    // EX, IP, I, W 等其他情况不生成输入框，保持原样
                 }
             } else {
                 if (el.dataset.origScore) {
                     el.textContent = el.dataset.origScore;
                 } else {
-                    // 尝试恢复 input 的值
+                    // 尝试恢复 input/select 的值
                     let input = el.querySelector('input');
                     if (input) el.textContent = input.value;
+                    let select = el.querySelector('select');
+                    if (select) el.textContent = select.value;
                 }
             }
         });
