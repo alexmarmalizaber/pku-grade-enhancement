@@ -793,7 +793,7 @@
             width: calc(100% + 600px) !important;
             z-index: -1 !important;
             background: repeating-linear-gradient(-45deg, #c5fcc5 0, #ffd1d1 120px, #d1d1ff 240px, #c5fcc5 360px) !important;
-            animation: rainbow-slide 1s linear infinite !important;
+            animation: rainbow-slide 10s linear infinite !important;
         }
         @keyframes rainbow-slide {
             0% { transform: translateX(0); }
@@ -974,3 +974,4 @@
     setInterval(forceBackground, 500);
 
 })();
+
