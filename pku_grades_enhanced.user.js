@@ -5,7 +5,6 @@
 // @description  北大成绩单页面美化+统计分析+模拟计算 (经典配色版)
 // @author       ttqqjj.smser
 // @match        *://treehole.pku.edu.cn/*
-// @match        *://pkuhelper.pku.edu.cn/*
 // @grant        GM_addStyle
 // @require      https://cdn.jsdelivr.net/npm/chart.js
 // @run-at       document-start
@@ -24,7 +23,7 @@
     };
 
     const SPECIAL_TEXT = {
-        'P': '通过', 'NP': '未通过', 'EX': '免修',
+        'P': '合格', 'NP': '不合格', 'EX': '免修',
         'IP': '跨学期', 'I': '缓考', 'W': '退课'
     };
 
@@ -70,7 +69,7 @@
     }
 
     function isEarnedCredit(score) {
-        if (score === 'P' || score === 'EX') return true;
+        if (score === '合格' || score === '免修') return true;
         let gpa = scoreToGPA(score);
         return gpa !== null && gpa > 0;
     }
@@ -137,7 +136,7 @@
     // ==========================================
     // 3. DOM 操作与数据提取
     // ==========================================
-    
+
     function getCreditFromRow(row) {
         let leftDiv = row.querySelector('.layout-row-left .layout-vertical-up');
         if (leftDiv) return parseFloat(leftDiv.textContent) || 0;
@@ -147,14 +146,14 @@
     function getScoreFromRow(row) {
         let rightDiv = row.querySelector('.layout-row-right .layout-vertical-up');
         if (!rightDiv) return null;
-        
+
         // 支持模拟模式的输入框
         let input = rightDiv.querySelector('input.sim-input');
         if (input) return parseScore(input.value);
 
         let select = rightDiv.querySelector('select.sim-input');
         if (select) return parseScore(select.value);
-        
+
         return parseScore(rightDiv.textContent);
     }
 
@@ -243,7 +242,6 @@
                 origIndex: index
             };
         });
-
         let sorted = sortCourses(courseData);
         let container = courseRowEls[0].parentElement;
         sorted.forEach(c => container.appendChild(c.el));
@@ -287,7 +285,7 @@
         let avgGPA = calcWeightedGPA(courseData);
         let avg100 = gpaTo100(avgGPA);
         titleRow.style.backgroundColor = getTitleColor(avg100, useGPAMode);
-        
+
         let titleMiddle = titleRow.querySelector('.layout-row-middle');
         if (titleMiddle) titleMiddle.style.padding = '0';
 
@@ -348,7 +346,7 @@
                 displayGPA = avgGPA !== null ? avgGPA.toFixed(2) : '-.--';
             }
             upDiv.textContent = displayGPA;
-            downDiv.textContent = avg100 !== null ? formatNumber(avg100, 1) : '-.--';
+            downDiv.textContent = avg100 !== null ? formatNumber(avg100, 1) : '--.-';
         }
 
         block.dataset.gmProcessed = '1';
@@ -376,9 +374,20 @@
         let avgGPA = calcWeightedGPA(allCourseData);
         let avg100 = gpaTo100(avgGPA);
         titleRow.style.backgroundColor = getTitleColor(avg100, useGPAMode);
-        
+
         let titleMiddle = titleRow.querySelector('.layout-row-middle');
-        if (titleMiddle) titleMiddle.style.padding = '0';
+        if (titleMiddle){
+            titleMiddle.style.padding = '0';
+
+            let upDiv = titleMiddle.querySelector('.layout-vertical-up');
+            upDiv.innerHTML = `
+                <div class="layout-vertical-up">总绩点</div>
+            `
+            let downDiv = titleMiddle.querySelector('.layout-vertical-down');
+            downDiv.innerHTML = `
+                <div class="layout-vertical-down">共 ${allCourseData.length} 门课程，官方 GPA：</div>
+            `
+        }
 
         if (!titleRow.querySelector('.gm-credit-cell')) {
             let totalCredit = 0;
@@ -399,6 +408,7 @@
         let titleRightDiv = titleRow.querySelector('.layout-row-right .layout-vertical');
         if (titleRightDiv) {
             let upDiv = titleRightDiv.querySelector('.layout-vertical-up');
+            upDiv.textContent = avg100 !== null ? formatNumber(avgGPA, 2) : '-.--';
             let downDiv = titleRightDiv.querySelector('.layout-vertical-down');
             if (!downDiv) {
                 downDiv = document.createElement('div');
@@ -410,7 +420,7 @@
                 }
                 titleRightDiv.appendChild(downDiv);
             }
-            downDiv.textContent = avg100 !== null ? formatNumber(avg100, 1) : '-.--';
+            downDiv.textContent = avg100 !== null ? formatNumber(avg100, 1) : '--.-';
         }
 
         block.dataset.gmProcessed = '1';
@@ -431,7 +441,7 @@
                 processSemesterBlock(block);
             }
         });
-        
+
         // 页面处理完后，初始化图表（如果还没初始化）
         if (!document.getElementById('gm-charts-container')) {
             initCharts();
@@ -450,17 +460,17 @@
         semesterBlocks.forEach(block => {
             let titleRow = block.querySelector(':scope > div:first-child .layout-row');
             let isOverall = titleRow && titleRow.textContent.includes('总');
-            
+
             if (isOverall) return; // 总成绩块稍后处理
 
             let courseData = [];
             block.querySelectorAll('.course-row .layout-row').forEach(row => {
                 let score = getScoreFromRow(row);
                 let credit = getCreditFromRow(row);
-                
+
                 // 更新行颜色
                 applyCourseColor(row, score);
-                
+
                 // 更新行 GPA 显示
                 let rightDiv = row.querySelector('.layout-row-right .layout-vertical');
                 if (rightDiv) {
@@ -502,6 +512,8 @@
             let avg100 = gpaTo100(avgGPA);
             if (titleRow) {
                 titleRow.style.backgroundColor = getTitleColor(avg100, useGPAMode);
+                let rightUp = titleRow.querySelector('.layout-row-right .layout-vertical-up');
+                if (rightUp) rightUp.textContent = avgGPA !== null ? formatNumber(avgGPA, 2) : '-.--';
                 let rightDown = titleRow.querySelector('.layout-row-right .layout-vertical-down');
                 if (rightDown) rightDown.textContent = avg100 !== null ? formatNumber(avg100, 1) : '-.--';
 
@@ -529,7 +541,7 @@
         let btn = document.getElementById('gm-sim-toggle');
 
         if (btn) {
-            btn.innerHTML = isSimulating ? '<span class="icon icon-check"></span> 完成模拟' : '<span class="icon icon-edit"></span> 开启模拟';
+            btn.innerHTML = isSimulating ? '<span class="icon icon-check"></span> 结束模拟' : '<span class="icon icon-edit"></span> 开启模拟';
             if (isSimulating) btn.classList.add('active');
             else btn.classList.remove('active');
         }
@@ -542,7 +554,7 @@
                 let currentScore = parseScore(el.textContent);
                 if (currentScore !== null) {
                     el.dataset.origScore = el.textContent;
-                    
+
                     if (typeof currentScore === 'number') {
                         el.innerHTML = `<input type="number" class="sim-input" value="${currentScore}" step="1" min="0" max="100" style="width: 60px; text-align: center;">`;
                         let input = el.querySelector('input');
@@ -603,7 +615,7 @@
             <div class="chart-card"><canvas id="gm-credits-chart"></canvas></div>
             <div class="chart-card"><canvas id="gm-dist-chart"></canvas></div>
         `;
-        
+
         // 插入到页面底部
         let viewer = document.querySelector('.viewer');
         if (viewer) viewer.appendChild(container);
@@ -822,6 +834,9 @@
             transform: translateY(-1px);
         }
 
+        /* 底边栏 */
+        .footer { font-size: 80%; }
+
         /* 模拟按钮高亮样式 */
         #gm-sim-toggle {
             background: linear-gradient(135deg, #ff6b6b, #ee5253);
@@ -921,15 +936,22 @@
     }
 
     function restoreFooter() {
-        let existingFooter = document.querySelector('.footer');
-        if (!existingFooter || existingFooter.classList.contains('gm-restored')) return;
+        let viewer = document.querySelector('.container');
+        let footer = viewer.querySelector('.footer');
+        if (footer && footer.classList.contains('gm-restored')) return;
+        if (!footer){
+            footer = document.createElement('div');
+            footer.className = 'footer';
+            viewer.appendChild(footer);
+        }
 
-        existingFooter.innerHTML = `
-            <p>绩点公式 <a>GPA(x) = 4-3*(100-x)<sup>2</sup>/1600</a></p>
+        footer.innerHTML = `
+            <p>绩点公式 <a style="font-family: 'Times New Roman', Georgia, serif;"> GPA(<i>x</i>) = 4 - 3 × (100 - <i>x</i>)<sup>2</sup> ÷ 1600 </a></p>
             <br>
-            <p>学期GPA和总GPA为公式计算所得，请以学校官方结果为准！</p>
+            <p>学期 GPA 和总 GPA 为公式计算所得，请以学校官方结果为准！</p>
+            <br>
         `;
-        existingFooter.classList.add('gm-restored');
+        footer.classList.add('gm-restored');
     }
 
     function init() {
@@ -943,8 +965,8 @@
 
     // 优化后的观察者逻辑
     let observer = new MutationObserver(function(mutations) {
-        let shouldInit = mutations.some(m => 
-            m.addedNodes.length > 0 && 
+        let shouldInit = mutations.some(m =>
+            m.addedNodes.length > 0 &&
             (document.querySelector('.viewer') || document.querySelector('.semester-block'))
         );
         if (shouldInit) setTimeout(init, 100);
@@ -974,4 +996,3 @@
     setInterval(forceBackground, 500);
 
 })();
-
