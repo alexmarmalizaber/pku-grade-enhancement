@@ -300,6 +300,7 @@
         // 1. 提取并排序课程
         let courseData = courseRowEls.map((el, index) => {
             let row = el.querySelector('.layout-row');
+            if (el.dataset.gmOriginalIndex === undefined) el.dataset.gmOriginalIndex = String(index);
             return {
                 el: el,
                 row: row,
@@ -307,7 +308,7 @@
                 score: getScoreFromRow(row),
                 courseName: getCourseNameFromRow(row),
                 details: getDetailsFromRow(row),
-                origIndex: index
+                origIndex: Number(el.dataset.gmOriginalIndex)
             };
         });
         let sorted = sortCourses(courseData);
@@ -532,11 +533,27 @@
 
             if (isOverall) return; // 总成绩块稍后处理
 
+            let courseRows = Array.from(block.querySelectorAll('.course-row')).map((el, index) => {
+                let row = el.querySelector('.layout-row');
+                if (el.dataset.gmOriginalIndex === undefined) el.dataset.gmOriginalIndex = String(index);
+                return {
+                    el,
+                    row,
+                    score: getScoreFromRow(row),
+                    credit: getCreditFromRow(row),
+                    courseName: getCourseNameFromRow(row),
+                    origIndex: Number(el.dataset.gmOriginalIndex)
+                };
+            });
+            let sortedCourses = sortCourses(courseRows);
+            if (sortedCourses.length) {
+                let container = sortedCourses[0].el.parentElement;
+                sortedCourses.forEach(course => container.appendChild(course.el));
+            }
+
             let courseData = [];
-            block.querySelectorAll('.course-row .layout-row').forEach(row => {
-                let score = getScoreFromRow(row);
-                let credit = getCreditFromRow(row);
-                let courseName = getCourseNameFromRow(row);
+            sortedCourses.forEach(course => {
+                let { row, score, credit, courseName } = course;
 
                 // 更新行颜色
                 applyCourseColor(row, score, courseName);
