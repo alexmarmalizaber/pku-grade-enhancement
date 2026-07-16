@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         PKU Grade Enhancement (v7.0)
+// @name         PKU Grade Enhancement (v7.1)
 // @namespace    http://tampermonkey.net/
-// @version      7.0
+// @version      7.1
 // @description  北大成绩单页面美化+统计分析+模拟计算 (经典配色版)
 // @author       ttqqjj.smser
 // @match        *://treehole.pku.edu.cn/*
@@ -30,13 +30,40 @@
     let useGPAMode = false;
     let isSimulating = false;
     let chartInstances = {};
+    const CUSTOM_CONVERSION_STORAGE_KEY = 'pku-grade-enhancement-custom-conversions';
+    let customConversionConfig = loadCustomConversionConfig();
+
+    function loadCustomConversionConfig() {
+        try {
+            let saved = JSON.parse(localStorage.getItem(CUSTOM_CONVERSION_STORAGE_KEY));
+            return {
+                courses: Array.isArray(saved?.courses) ? saved.courses : [],
+                mapping: saved?.mapping && typeof saved.mapping === 'object' ? saved.mapping : {}
+            };
+        } catch (_) {
+            return { courses: [], mapping: {} };
+        }
+    }
+
+    function isCustomGradeCourse(courseName) {
+        return Boolean(courseName) && customConversionConfig.courses.includes(courseName);
+    }
+
+    function getCustomConversion(score, courseName) {
+        if (typeof score !== 'string' || !isCustomGradeCourse(courseName)) return null;
+        let conversion = customConversionConfig.mapping[score];
+        if (!conversion || !Number.isFinite(conversion.score) || !Number.isFinite(conversion.gpa)) return null;
+        return conversion;
+    }
 
     // ==========================================
     // 2. 核心计算函数
     // ==========================================
-    function scoreToGPA(score) {
+    function scoreToGPA(score, courseName) {
         if (score === null || score === undefined) return null;
         if (typeof score === 'string') {
+            let customConversion = getCustomConversion(score, courseName);
+            if (customConversion) return customConversion.gpa;
             if (GRADE_MAP.hasOwnProperty(score)) return GRADE_MAP[score];
             let n = parseFloat(score);
             if (!isNaN(n)) score = n;
@@ -52,38 +79,48 @@
         return null;
     }
 
-    function calcRatio(score, useGPA) {
-        let gpa = scoreToGPA(score);
+    function scoreTo100(score, courseName) {
+        if (typeof score === 'number') return score;
+        let customConversion = getCustomConversion(score, courseName);
+        if (customConversion) return customConversion.score;
+        return gpaTo100(scoreToGPA(score, courseName));
+    }
+
+    function calcRatio(score, useGPA, courseName) {
+        let gpa = scoreToGPA(score, courseName);
         if (gpa === null) return 0;
         if (useGPA) return (gpa - 1) / 3;
-        let s100 = gpaTo100(gpa);
+        let s100 = scoreTo100(score, courseName);
         return (s100 - 60) / 40;
     }
 
-    function isNull(score) {
-        return scoreToGPA(score) === null;
+    function isNull(score, courseName) {
+        return scoreToGPA(score, courseName) === null;
     }
 
-    function isFail(score) {
-        return score === 'NP' || score === 'F' || (typeof score === 'number' && score < 60);
+    function isFail(score, courseName) {
+        let gpa = scoreToGPA(score, courseName);
+        let score100 = scoreTo100(score, courseName);
+        return score === 'NP' || score === 'F' || gpa === 0 || (typeof score100 === 'number' && score100 < 60);
     }
 
-    function isEarnedCredit(score) {
+    function isEarnedCredit(score, courseName) {
         if (score === '合格' || score === '免修') return true;
-        let gpa = scoreToGPA(score);
+        let gpa = scoreToGPA(score, courseName);
         return gpa !== null && gpa > 0;
     }
 
-    function getTitleColor(score, useGPA) {
-        if (isNull(score)) return 'hsl(240,30%,88%)';
-        return `hsl(${120 * calcRatio(score, useGPA)},${useGPA ? 97 : 100}%,70%)`;
+    function getTitleColor(score, useGPA, gpa) {
+        if (score === null || gpa === null) return 'hsl(240,30%,88%)';
+        let ratio = useGPA ? (gpa - 1) / 3 : (score - 60) / 40;
+        return `hsl(${120 * ratio},${useGPA ? 97 : 100}%,70%)`;
     }
 
-    function getGradient(score, useGPA) {
-        if (isNull(score) || (typeof score === 'number' && score < 60)) {
-            return { bg: 'hsl(240,30%,88%)', ratio: isFail(score) ? 0 : 1 };
+    function getGradient(score, useGPA, courseName) {
+        if (isNull(score, courseName) || isFail(score, courseName)) {
+            return { bg: 'hsl(240,30%,88%)', ratio: isFail(score, courseName) ? 0 : 1 };
         }
-        let r = calcRatio(score, useGPA);
+        let r = calcRatio(score, useGPA, courseName);
         let c1 = `hsl(${120*r},${useGPA?97:100}%,75%)`;
         let c2 = `hsl(${120*r},${useGPA?97:100}%,70%)`;
         let c3 = `hsl(${120*r},${useGPA?57:60}%,65%)`;
@@ -96,8 +133,8 @@
         return n.toFixed(decimals).replace(/\.?0+$/, '');
     }
 
-    function getGPADisplay(score) {
-        let gpa = scoreToGPA(score);
+    function getGPADisplay(score, courseName) {
+        let gpa = scoreToGPA(score, courseName);
         if (gpa !== null) return gpa.toFixed(2);
         if (typeof score === 'string' && SPECIAL_TEXT[score]) return SPECIAL_TEXT[score];
         return '-.--';
@@ -124,10 +161,22 @@
     function calcWeightedGPA(courseData) {
         let totalCredit = 0, totalWeighted = 0;
         courseData.forEach(c => {
-            let gpa = scoreToGPA(c.score);
+            let gpa = scoreToGPA(c.score, c.courseName);
             if (gpa !== null && c.credit > 0) {
                 totalCredit += c.credit;
                 totalWeighted += c.credit * gpa;
+            }
+        });
+        return totalCredit > 0 ? totalWeighted / totalCredit : null;
+    }
+
+    function calcWeighted100(courseData) {
+        let totalCredit = 0, totalWeighted = 0;
+        courseData.forEach(c => {
+            let score100 = scoreTo100(c.score, c.courseName);
+            if (score100 !== null && c.credit > 0) {
+                totalCredit += c.credit;
+                totalWeighted += c.credit * score100;
             }
         });
         return totalCredit > 0 ? totalWeighted / totalCredit : null;
@@ -155,6 +204,11 @@
         if (select) return parseScore(select.value);
 
         return parseScore(rightDiv.textContent);
+    }
+
+    function getCourseNameFromRow(row) {
+        let nameDiv = row.querySelector('.layout-row-middle .layout-vertical-up');
+        return nameDiv ? nameDiv.textContent.trim() : '';
     }
 
     function getDetailsFromRow(row) {
@@ -191,22 +245,22 @@
         return null;
     }
 
-    function applyCourseColor(el, score) {
+    function applyCourseColor(el, score, courseName) {
         if (score === null) return;
         if (typeof score === 'number' && score > 99.995) {
             el.classList.add('rainbow-moving');
             el.style.background = '';
         } else {
             el.classList.remove('rainbow-moving');
-            let g = getGradient(score, useGPAMode);
+            let g = getGradient(score, useGPAMode, courseName);
             el.style.background = g.bg;
         }
     }
 
     function sortCourses(courseData) {
         return courseData.slice().sort((a, b) => {
-            let gpaA = scoreToGPA(a.score);
-            let gpaB = scoreToGPA(b.score);
+            let gpaA = scoreToGPA(a.score, a.courseName);
+            let gpaB = scoreToGPA(b.score, b.courseName);
             if (gpaA !== gpaB) {
                 if (gpaB === null) return -1;
                 if (gpaA === null) return 1;
@@ -238,6 +292,7 @@
                 row: row,
                 credit: getCreditFromRow(row),
                 score: getScoreFromRow(row),
+                courseName: getCourseNameFromRow(row),
                 details: getDetailsFromRow(row),
                 origIndex: index
             };
@@ -248,7 +303,7 @@
 
         // 2. 增强课程行显示
         sorted.forEach(c => {
-            applyCourseColor(c.row, c.score);
+            applyCourseColor(c.row, c.score, c.courseName);
 
             let rightDiv = c.row.querySelector('.layout-row-right .layout-vertical');
             if (rightDiv) {
@@ -267,7 +322,7 @@
                 }
                 // 初始值设置
                 if (upDiv) upDiv.textContent = getScoreDisplay(c.score);
-                downDiv.textContent = getGPADisplay(c.score);
+                downDiv.textContent = getGPADisplay(c.score, c.courseName);
             }
 
             // 补充课程详情
@@ -283,8 +338,8 @@
 
         // 3. 增强标题行显示
         let avgGPA = calcWeightedGPA(courseData);
-        let avg100 = gpaTo100(avgGPA);
-        titleRow.style.backgroundColor = getTitleColor(avg100, useGPAMode);
+        let avg100 = calcWeighted100(courseData);
+        titleRow.style.backgroundColor = getTitleColor(avg100, useGPAMode, avgGPA);
 
         let titleMiddle = titleRow.querySelector('.layout-row-middle');
         if (titleMiddle) titleMiddle.style.padding = '0';
@@ -293,7 +348,7 @@
         if (!titleRow.querySelector('.gm-credit-cell')) {
             let totalCredit = 0;
             courseData.forEach(c => {
-                if (isEarnedCredit(c.score)) totalCredit += c.credit;
+                if (isEarnedCredit(c.score, c.courseName)) totalCredit += c.credit;
             });
             let creditCell = document.createElement('div');
             creditCell.className = 'layout-row-left gm-credit-cell';
@@ -366,14 +421,15 @@
                 let row = el.querySelector('.layout-row');
                 allCourseData.push({
                     credit: getCreditFromRow(row),
-                    score: getScoreFromRow(row)
+                    score: getScoreFromRow(row),
+                    courseName: getCourseNameFromRow(row)
                 });
             });
         });
 
         let avgGPA = calcWeightedGPA(allCourseData);
-        let avg100 = gpaTo100(avgGPA);
-        titleRow.style.backgroundColor = getTitleColor(avg100, useGPAMode);
+        let avg100 = calcWeighted100(allCourseData);
+        titleRow.style.backgroundColor = getTitleColor(avg100, useGPAMode, avgGPA);
 
         let titleMiddle = titleRow.querySelector('.layout-row-middle');
         if (titleMiddle){
@@ -392,7 +448,7 @@
         if (!titleRow.querySelector('.gm-credit-cell')) {
             let totalCredit = 0;
             allCourseData.forEach(c => {
-                if (isEarnedCredit(c.score)) totalCredit += c.credit;
+                if (isEarnedCredit(c.score, c.courseName)) totalCredit += c.credit;
             });
             let creditCell = document.createElement('div');
             creditCell.className = 'layout-row-left gm-credit-cell';
@@ -467,26 +523,27 @@
             block.querySelectorAll('.course-row .layout-row').forEach(row => {
                 let score = getScoreFromRow(row);
                 let credit = getCreditFromRow(row);
+                let courseName = getCourseNameFromRow(row);
 
                 // 更新行颜色
-                applyCourseColor(row, score);
+                applyCourseColor(row, score, courseName);
 
                 // 更新行 GPA 显示
                 let rightDiv = row.querySelector('.layout-row-right .layout-vertical');
                 if (rightDiv) {
                     let downDiv = rightDiv.querySelector('.layout-vertical-down');
-                    if (downDiv) downDiv.textContent = getGPADisplay(score);
+                    if (downDiv) downDiv.textContent = getGPADisplay(score, courseName);
                 }
 
-                courseData.push({ credit: credit, score: score });
-                allCourseData.push({ credit: credit, score: score });
+                courseData.push({ credit: credit, score: score, courseName: courseName });
+                allCourseData.push({ credit: credit, score: score, courseName: courseName });
             });
 
             // 更新学期标题统计
             let avgGPA = calcWeightedGPA(courseData);
-            let avg100 = gpaTo100(avgGPA);
+            let avg100 = calcWeighted100(courseData);
             if (titleRow) {
-                titleRow.style.backgroundColor = getTitleColor(avg100, useGPAMode);
+                titleRow.style.backgroundColor = getTitleColor(avg100, useGPAMode, avgGPA);
                 let rightUp = titleRow.querySelector('.layout-row-right .layout-vertical-up');
                 let rightDown = titleRow.querySelector('.layout-row-right .layout-vertical-down');
                 if (rightUp) rightUp.textContent = avgGPA !== null ? avgGPA.toFixed(2) : '-.--';
@@ -497,7 +554,7 @@
                 if (creditUp) {
                     let totalCredit = 0;
                     courseData.forEach(c => {
-                        if (isEarnedCredit(c.score)) totalCredit += c.credit;
+                        if (isEarnedCredit(c.score, c.courseName)) totalCredit += c.credit;
                     });
                     creditUp.textContent = formatNumber(totalCredit, 1);
                 }
@@ -509,9 +566,9 @@
         if (overallBlock) {
             let titleRow = overallBlock.querySelector(':scope > div:first-child .layout-row');
             let avgGPA = calcWeightedGPA(allCourseData);
-            let avg100 = gpaTo100(avgGPA);
+            let avg100 = calcWeighted100(allCourseData);
             if (titleRow) {
-                titleRow.style.backgroundColor = getTitleColor(avg100, useGPAMode);
+                titleRow.style.backgroundColor = getTitleColor(avg100, useGPAMode, avgGPA);
                 let rightUp = titleRow.querySelector('.layout-row-right .layout-vertical-up');
                 if (rightUp) rightUp.textContent = avgGPA !== null ? formatNumber(avgGPA, 2) : '-.--';
                 let rightDown = titleRow.querySelector('.layout-row-right .layout-vertical-down');
@@ -522,7 +579,7 @@
                 if (creditUp) {
                     let totalCredit = 0;
                     allCourseData.forEach(c => {
-                        if (isEarnedCredit(c.score)) totalCredit += c.credit;
+                        if (isEarnedCredit(c.score, c.courseName)) totalCredit += c.credit;
                     });
                     creditUp.textContent = formatNumber(totalCredit, 1);
                 }
@@ -560,9 +617,10 @@
                         let input = el.querySelector('input');
                         input.addEventListener('input', recalculateAll);
                         input.addEventListener('click', e => e.stopPropagation());
-                    } else if (LETTER_GRADES.includes(currentScore)) {
+                    } else if (LETTER_GRADES.includes(currentScore) || getCustomConversion(currentScore, getCourseNameFromRow(el.closest('.course-row .layout-row')))) {
+                        let gradeOptions = [...new Set([...LETTER_GRADES, ...Object.keys(customConversionConfig.mapping)])];
                         let selectHtml = `<select class="sim-input" style="width: 60px;">`;
-                        LETTER_GRADES.forEach(opt => {
+                        gradeOptions.forEach(opt => {
                             let selected = opt === currentScore ? 'selected' : '';
                             selectHtml += `<option value="${opt}" ${selected}>${opt}</option>`;
                         });
@@ -720,18 +778,20 @@
             block.querySelectorAll('.course-row .layout-row').forEach(row => {
                 let score = getScoreFromRow(row);
                 let credit = getCreditFromRow(row);
-                courseData.push({ credit, score });
+                let courseName = getCourseNameFromRow(row);
+                courseData.push({ credit, score, courseName });
 
                 // 分布统计
-                if (typeof score === 'number') {
-                    if (score < 60) distData[0]++;
-                    else if (score < 70) distData[1]++;
-                    else if (score < 80) distData[2]++;
-                    else if (score < 90) distData[3]++;
+                let score100 = scoreTo100(score, courseName);
+                if (typeof score100 === 'number') {
+                    if (score100 < 60) distData[0]++;
+                    else if (score100 < 70) distData[1]++;
+                    else if (score100 < 80) distData[2]++;
+                    else if (score100 < 90) distData[3]++;
                     else distData[4]++;
                 }
 
-                let gpa = scoreToGPA(score);
+                let gpa = scoreToGPA(score, courseName);
                 if (gpa !== null && credit > 0) {
                     semWeighted += gpa * credit;
                     semCredits += credit;
@@ -890,6 +950,38 @@
             box-shadow: 0 4px 12px rgba(0,0,0,0.2);
             height: 300px;
         }
+        #gm-conversion-settings {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 10000;
+            padding: 24px;
+            background: rgba(0, 0, 0, .55);
+        }
+        #gm-conversion-settings.visible {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .gm-settings-dialog {
+            width: min(560px, 100%);
+            max-height: 90vh;
+            overflow: auto;
+            box-sizing: border-box;
+            padding: 24px;
+            border-radius: 10px;
+            background: #fff;
+            color: #333;
+            box-shadow: 0 12px 36px rgba(0, 0, 0, .35);
+        }
+        .gm-settings-dialog h3 { margin-top: 0; }
+        .gm-settings-dialog label, .gm-settings-dialog textarea { display: block; width: 100%; box-sizing: border-box; }
+        .gm-settings-dialog label { margin: 14px 0 6px; font-weight: bold; }
+        .gm-settings-dialog textarea { padding: 8px; border: 1px solid #bbb; border-radius: 4px; font-family: monospace; }
+        .gm-settings-hint { color: #666; font-size: 13px; line-height: 1.5; }
+        .gm-settings-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+        .gm-settings-actions button { padding: 7px 12px; border: 0; border-radius: 4px; cursor: pointer; }
+        .gm-settings-actions [data-action="save"] { background: #8B0012; color: #fff; }
     `);
 
     function addControls() {
@@ -933,6 +1025,65 @@
         toggleSim.title = '开启后可修改成绩进行模拟计算';
         toggleSim.onclick = toggleSimulation;
         controllerBar.appendChild(toggleSim);
+
+        let settingsButton = document.createElement('a');
+        settingsButton.id = 'gm-conversion-settings-toggle';
+        settingsButton.className = 'gm-btn';
+        settingsButton.innerHTML = '<span class="icon icon-setting"></span> 等级换算设置';
+        settingsButton.title = '设置哪些课程采用等级制，以及等级对应的百分制和 GPA';
+        settingsButton.onclick = openConversionSettings;
+        controllerBar.appendChild(settingsButton);
+    }
+
+    function openConversionSettings() {
+        let modal = document.getElementById('gm-conversion-settings');
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.id = 'gm-conversion-settings';
+            modal.innerHTML = `
+                <div class="gm-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="gm-settings-title">
+                    <h3 id="gm-settings-title">等级制课程换算设置</h3>
+                    <label>等级制课程名称（每行一个，须与成绩单课程名称完全一致）</label>
+                    <textarea id="gm-custom-courses" rows="6" placeholder="例如：大学英语&#10;概率论"></textarea>
+                    <label>等级换算（每行：等级 = 百分制, GPA）</label>
+                    <textarea id="gm-custom-mapping" rows="8" placeholder="例如：A = 95, 4.0&#10;B = 85, 3.0&#10;C = 75, 2.0&#10;D = 65, 1.0&#10;F = 50, 0"></textarea>
+                    <p class="gm-settings-hint">只会对上方列出的课程生效。保存后会立即更新成绩显示、配色、平均分、GPA 和图表；设置保存在当前浏览器。</p>
+                    <div class="gm-settings-actions"><button type="button" data-action="cancel">取消</button><button type="button" data-action="save">保存并应用</button></div>
+                </div>`;
+            document.body.appendChild(modal);
+            modal.addEventListener('click', event => {
+                if (event.target === modal || event.target.dataset.action === 'cancel') modal.classList.remove('visible');
+                if (event.target.dataset.action === 'save') saveConversionSettings(modal);
+            });
+        }
+        modal.querySelector('#gm-custom-courses').value = customConversionConfig.courses.join('\n');
+        modal.querySelector('#gm-custom-mapping').value = Object.entries(customConversionConfig.mapping)
+            .map(([grade, conversion]) => `${grade} = ${conversion.score}, ${conversion.gpa}`).join('\n');
+        modal.classList.add('visible');
+    }
+
+    function saveConversionSettings(modal) {
+        let courses = modal.querySelector('#gm-custom-courses').value.split('\n').map(name => name.trim()).filter(Boolean);
+        let mapping = {};
+        let invalidLines = [];
+        modal.querySelector('#gm-custom-mapping').value.split('\n').forEach((line, index) => {
+            let trimmed = line.trim();
+            if (!trimmed) return;
+            let match = /^([^=,\s]+)\s*=\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/.exec(trimmed);
+            if (!match || Number(match[2]) < 0 || Number(match[2]) > 100 || Number(match[3]) < 0 || Number(match[3]) > 4) {
+                invalidLines.push(index + 1);
+                return;
+            }
+            mapping[match[1]] = { score: Number(match[2]), gpa: Number(match[3]) };
+        });
+        if (invalidLines.length) {
+            alert(`第 ${invalidLines.join('、')} 行格式无效。请使用“等级 = 百分制, GPA”，百分制为 0–100，GPA 为 0–4。`);
+            return;
+        }
+        customConversionConfig = { courses: [...new Set(courses)], mapping };
+        localStorage.setItem(CUSTOM_CONVERSION_STORAGE_KEY, JSON.stringify(customConversionConfig));
+        modal.classList.remove('visible');
+        recalculateAll();
     }
 
     function restoreFooter() {
