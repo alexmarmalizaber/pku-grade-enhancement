@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         PKU Grade Enhancement (v7.0)
+// @name         PKU Grade Enhancement (v7.1)
 // @namespace    http://tampermonkey.net/
-// @version      7.0
+// @version      7.1
 // @description  北大成绩单页面美化+统计分析+模拟计算 (经典配色版)
 // @author       ttqqjj.smser
 // @match        *://treehole.pku.edu.cn/*
@@ -30,6 +30,54 @@
     let useGPAMode = false;
     let isSimulating = false;
     let chartInstances = {};
+    const CUSTOM_CONVERSION_STORAGE_KEY = 'pku-grade-enhancement-custom-conversions';
+    const LETTER_GRADE_ORDER = ['A+', 'A', 'A-', 'B+', 'B', 'B-', 'C+', 'C', 'C-', 'D+', 'D', 'F'];
+    const DEFAULT_GPA_MAPPING = {
+        'A+': 4, 'A': 4, 'A-': 3.7, 'B+': 3.3, 'B': 3, 'B-': 2.7,
+        'C+': 2.3, 'C': 2, 'C-': 1.7, 'D+': 1.3, 'D': 1, 'F': 0
+    };
+    let customConversionConfig = loadCustomConversionConfig();
+
+    function roundTo(value, decimals) {
+        let factor = Math.pow(10, decimals);
+        return Math.round((value + Number.EPSILON) * factor) / factor;
+    }
+
+    function percentageToGPA(score) {
+        if (score < 60) return null;
+        return roundTo(4 - 3 * Math.pow(100 - score, 2) / 1600, 2);
+    }
+
+    function loadCustomConversionConfig() {
+        try {
+            let saved = JSON.parse(localStorage.getItem(CUSTOM_CONVERSION_STORAGE_KEY));
+            // 兼容上一版按课程保存的设置：保留其 GPA 数值并自动改为全局规则。
+            if (saved?.courses && saved?.mapping) {
+                let mapping = {};
+                LETTER_GRADE_ORDER.forEach(grade => {
+                    mapping[grade] = Number.isFinite(saved.mapping[grade]?.gpa) ? saved.mapping[grade].gpa : DEFAULT_GPA_MAPPING[grade];
+                });
+                return { enabled: true, mode: 'gpa', mapping };
+            }
+            return {
+                enabled: saved?.enabled === true,
+                mode: saved?.mode === 'score' ? 'score' : 'gpa',
+                mapping: saved?.mapping && typeof saved.mapping === 'object' ? saved.mapping : { ...DEFAULT_GPA_MAPPING }
+            };
+        } catch (_) {
+            return { enabled: false, mode: 'gpa', mapping: { ...DEFAULT_GPA_MAPPING } };
+        }
+    }
+
+    function getCustomConversion(score) {
+        if (typeof score !== 'string' || !customConversionConfig.enabled || !LETTER_GRADE_ORDER.includes(score)) return null;
+        let value = customConversionConfig.mapping[score];
+        if (!Number.isFinite(value)) return null;
+        if (customConversionConfig.mode === 'score') {
+            return { score: value, gpa: percentageToGPA(value) ?? 0 };
+        }
+        return { score: gpaTo100(value), gpa: value };
+    }
 
     // ==========================================
     // 2. 核心计算函数
@@ -37,12 +85,14 @@
     function scoreToGPA(score) {
         if (score === null || score === undefined) return null;
         if (typeof score === 'string') {
+            let customConversion = getCustomConversion(score);
+            if (customConversion) return customConversion.gpa;
             if (GRADE_MAP.hasOwnProperty(score)) return GRADE_MAP[score];
             let n = parseFloat(score);
             if (!isNaN(n)) score = n;
             else return null;
         }
-        return score >= 60 ? 4 - 3 * Math.pow(100 - score, 2) / 1600 : null;
+        return percentageToGPA(score);
     }
 
     function gpaTo100(gpa) {
@@ -52,11 +102,18 @@
         return null;
     }
 
+    function scoreTo100(score) {
+        if (typeof score === 'number') return score;
+        let customConversion = getCustomConversion(score);
+        if (customConversion) return customConversion.score;
+        return gpaTo100(scoreToGPA(score));
+    }
+
     function calcRatio(score, useGPA) {
         let gpa = scoreToGPA(score);
         if (gpa === null) return 0;
         if (useGPA) return (gpa - 1) / 3;
-        let s100 = gpaTo100(gpa);
+        let s100 = scoreTo100(score);
         return (s100 - 60) / 40;
     }
 
@@ -65,7 +122,9 @@
     }
 
     function isFail(score) {
-        return score === 'NP' || score === 'F' || (typeof score === 'number' && score < 60);
+        let gpa = scoreToGPA(score);
+        let score100 = scoreTo100(score);
+        return score === 'NP' || score === 'F' || gpa === 0 || (typeof score100 === 'number' && score100 < 60);
     }
 
     function isEarnedCredit(score) {
@@ -74,13 +133,14 @@
         return gpa !== null && gpa > 0;
     }
 
-    function getTitleColor(score, useGPA) {
-        if (isNull(score)) return 'hsl(240,30%,88%)';
-        return `hsl(${120 * calcRatio(score, useGPA)},${useGPA ? 97 : 100}%,70%)`;
+    function getTitleColor(score, useGPA, gpa) {
+        if (score === null || gpa === null) return 'hsl(240,30%,88%)';
+        let ratio = useGPA ? (gpa - 1) / 3 : (score - 60) / 40;
+        return `hsl(${120 * ratio},${useGPA ? 97 : 100}%,70%)`;
     }
 
     function getGradient(score, useGPA) {
-        if (isNull(score) || (typeof score === 'number' && score < 60)) {
+        if (isNull(score) || isFail(score)) {
             return { bg: 'hsl(240,30%,88%)', ratio: isFail(score) ? 0 : 1 };
         }
         let r = calcRatio(score, useGPA);
@@ -133,6 +193,18 @@
         return totalCredit > 0 ? totalWeighted / totalCredit : null;
     }
 
+    function calcWeighted100(courseData) {
+        let totalCredit = 0, totalWeighted = 0;
+        courseData.forEach(c => {
+            let score100 = scoreTo100(c.score);
+            if (score100 !== null && c.credit > 0) {
+                totalCredit += c.credit;
+                totalWeighted += c.credit * score100;
+            }
+        });
+        return totalCredit > 0 ? totalWeighted / totalCredit : null;
+    }
+
     // ==========================================
     // 3. DOM 操作与数据提取
     // ==========================================
@@ -155,6 +227,11 @@
         if (select) return parseScore(select.value);
 
         return parseScore(rightDiv.textContent);
+    }
+
+    function getCourseNameFromRow(row) {
+        let nameDiv = row.querySelector('.layout-row-middle .layout-vertical-up');
+        return nameDiv ? nameDiv.textContent.trim() : '';
     }
 
     function getDetailsFromRow(row) {
@@ -191,22 +268,22 @@
         return null;
     }
 
-    function applyCourseColor(el, score) {
+    function applyCourseColor(el, score, courseName) {
         if (score === null) return;
         if (typeof score === 'number' && score > 99.995) {
             el.classList.add('rainbow-moving');
             el.style.background = '';
         } else {
             el.classList.remove('rainbow-moving');
-            let g = getGradient(score, useGPAMode);
+            let g = getGradient(score, useGPAMode, courseName);
             el.style.background = g.bg;
         }
     }
 
     function sortCourses(courseData) {
         return courseData.slice().sort((a, b) => {
-            let gpaA = scoreToGPA(a.score);
-            let gpaB = scoreToGPA(b.score);
+            let gpaA = scoreToGPA(a.score, a.courseName);
+            let gpaB = scoreToGPA(b.score, b.courseName);
             if (gpaA !== gpaB) {
                 if (gpaB === null) return -1;
                 if (gpaA === null) return 1;
@@ -233,13 +310,15 @@
         // 1. 提取并排序课程
         let courseData = courseRowEls.map((el, index) => {
             let row = el.querySelector('.layout-row');
+            if (el.dataset.gmOriginalIndex === undefined) el.dataset.gmOriginalIndex = String(index);
             return {
                 el: el,
                 row: row,
                 credit: getCreditFromRow(row),
                 score: getScoreFromRow(row),
+                courseName: getCourseNameFromRow(row),
                 details: getDetailsFromRow(row),
-                origIndex: index
+                origIndex: Number(el.dataset.gmOriginalIndex)
             };
         });
         let sorted = sortCourses(courseData);
@@ -248,7 +327,7 @@
 
         // 2. 增强课程行显示
         sorted.forEach(c => {
-            applyCourseColor(c.row, c.score);
+            applyCourseColor(c.row, c.score, c.courseName);
 
             let rightDiv = c.row.querySelector('.layout-row-right .layout-vertical');
             if (rightDiv) {
@@ -267,7 +346,7 @@
                 }
                 // 初始值设置
                 if (upDiv) upDiv.textContent = getScoreDisplay(c.score);
-                downDiv.textContent = getGPADisplay(c.score);
+                downDiv.textContent = getGPADisplay(c.score, c.courseName);
             }
 
             // 补充课程详情
@@ -283,8 +362,8 @@
 
         // 3. 增强标题行显示
         let avgGPA = calcWeightedGPA(courseData);
-        let avg100 = gpaTo100(avgGPA);
-        titleRow.style.backgroundColor = getTitleColor(avg100, useGPAMode);
+        let avg100 = calcWeighted100(courseData);
+        titleRow.style.backgroundColor = getTitleColor(avg100, useGPAMode, avgGPA);
 
         let titleMiddle = titleRow.querySelector('.layout-row-middle');
         if (titleMiddle) titleMiddle.style.padding = '0';
@@ -293,7 +372,7 @@
         if (!titleRow.querySelector('.gm-credit-cell')) {
             let totalCredit = 0;
             courseData.forEach(c => {
-                if (isEarnedCredit(c.score)) totalCredit += c.credit;
+                if (isEarnedCredit(c.score, c.courseName)) totalCredit += c.credit;
             });
             let creditCell = document.createElement('div');
             creditCell.className = 'layout-row-left gm-credit-cell';
@@ -341,11 +420,7 @@
                 }
                 titleRightDiv.appendChild(downDiv);
             }
-            let displayGPA = upDiv.textContent.trim();
-            if (displayGPA === '-.--' || !displayGPA) {
-                displayGPA = avgGPA !== null ? avgGPA.toFixed(2) : '-.--';
-            }
-            upDiv.textContent = displayGPA;
+            upDiv.textContent = avgGPA !== null ? avgGPA.toFixed(3) : '-.--';
             downDiv.textContent = avg100 !== null ? formatNumber(avg100, 1) : '--.-';
         }
 
@@ -366,14 +441,15 @@
                 let row = el.querySelector('.layout-row');
                 allCourseData.push({
                     credit: getCreditFromRow(row),
-                    score: getScoreFromRow(row)
+                    score: getScoreFromRow(row),
+                    courseName: getCourseNameFromRow(row)
                 });
             });
         });
 
         let avgGPA = calcWeightedGPA(allCourseData);
-        let avg100 = gpaTo100(avgGPA);
-        titleRow.style.backgroundColor = getTitleColor(avg100, useGPAMode);
+        let avg100 = calcWeighted100(allCourseData);
+        titleRow.style.backgroundColor = getTitleColor(avg100, useGPAMode, avgGPA);
 
         let titleMiddle = titleRow.querySelector('.layout-row-middle');
         if (titleMiddle){
@@ -392,7 +468,7 @@
         if (!titleRow.querySelector('.gm-credit-cell')) {
             let totalCredit = 0;
             allCourseData.forEach(c => {
-                if (isEarnedCredit(c.score)) totalCredit += c.credit;
+                if (isEarnedCredit(c.score, c.courseName)) totalCredit += c.credit;
             });
             let creditCell = document.createElement('div');
             creditCell.className = 'layout-row-left gm-credit-cell';
@@ -408,7 +484,7 @@
         let titleRightDiv = titleRow.querySelector('.layout-row-right .layout-vertical');
         if (titleRightDiv) {
             let upDiv = titleRightDiv.querySelector('.layout-vertical-up');
-            upDiv.textContent = avg100 !== null ? formatNumber(avgGPA, 2) : '-.--';
+            upDiv.textContent = avgGPA !== null ? avgGPA.toFixed(3) : '-.--';
             let downDiv = titleRightDiv.querySelector('.layout-vertical-down');
             if (!downDiv) {
                 downDiv = document.createElement('div');
@@ -463,33 +539,50 @@
 
             if (isOverall) return; // 总成绩块稍后处理
 
+            let courseRows = Array.from(block.querySelectorAll('.course-row')).map((el, index) => {
+                let row = el.querySelector('.layout-row');
+                if (el.dataset.gmOriginalIndex === undefined) el.dataset.gmOriginalIndex = String(index);
+                return {
+                    el,
+                    row,
+                    score: getScoreFromRow(row),
+                    credit: getCreditFromRow(row),
+                    courseName: getCourseNameFromRow(row),
+                    origIndex: Number(el.dataset.gmOriginalIndex)
+                };
+            });
+            let sortedCourses = sortCourses(courseRows);
+            if (sortedCourses.length) {
+                let container = sortedCourses[0].el.parentElement;
+                sortedCourses.forEach(course => container.appendChild(course.el));
+            }
+
             let courseData = [];
-            block.querySelectorAll('.course-row .layout-row').forEach(row => {
-                let score = getScoreFromRow(row);
-                let credit = getCreditFromRow(row);
+            sortedCourses.forEach(course => {
+                let { row, score, credit, courseName } = course;
 
                 // 更新行颜色
-                applyCourseColor(row, score);
+                applyCourseColor(row, score, courseName);
 
                 // 更新行 GPA 显示
                 let rightDiv = row.querySelector('.layout-row-right .layout-vertical');
                 if (rightDiv) {
                     let downDiv = rightDiv.querySelector('.layout-vertical-down');
-                    if (downDiv) downDiv.textContent = getGPADisplay(score);
+                    if (downDiv) downDiv.textContent = getGPADisplay(score, courseName);
                 }
 
-                courseData.push({ credit: credit, score: score });
-                allCourseData.push({ credit: credit, score: score });
+                courseData.push({ credit: credit, score: score, courseName: courseName });
+                allCourseData.push({ credit: credit, score: score, courseName: courseName });
             });
 
             // 更新学期标题统计
             let avgGPA = calcWeightedGPA(courseData);
-            let avg100 = gpaTo100(avgGPA);
+            let avg100 = calcWeighted100(courseData);
             if (titleRow) {
-                titleRow.style.backgroundColor = getTitleColor(avg100, useGPAMode);
+                titleRow.style.backgroundColor = getTitleColor(avg100, useGPAMode, avgGPA);
                 let rightUp = titleRow.querySelector('.layout-row-right .layout-vertical-up');
                 let rightDown = titleRow.querySelector('.layout-row-right .layout-vertical-down');
-                if (rightUp) rightUp.textContent = avgGPA !== null ? avgGPA.toFixed(2) : '-.--';
+                if (rightUp) rightUp.textContent = avgGPA !== null ? avgGPA.toFixed(3) : '-.--';
                 if (rightDown) rightDown.textContent = avg100 !== null ? formatNumber(avg100, 1) : '-.--';
 
                 // 更新学分
@@ -497,7 +590,7 @@
                 if (creditUp) {
                     let totalCredit = 0;
                     courseData.forEach(c => {
-                        if (isEarnedCredit(c.score)) totalCredit += c.credit;
+                        if (isEarnedCredit(c.score, c.courseName)) totalCredit += c.credit;
                     });
                     creditUp.textContent = formatNumber(totalCredit, 1);
                 }
@@ -509,11 +602,11 @@
         if (overallBlock) {
             let titleRow = overallBlock.querySelector(':scope > div:first-child .layout-row');
             let avgGPA = calcWeightedGPA(allCourseData);
-            let avg100 = gpaTo100(avgGPA);
+            let avg100 = calcWeighted100(allCourseData);
             if (titleRow) {
-                titleRow.style.backgroundColor = getTitleColor(avg100, useGPAMode);
+                titleRow.style.backgroundColor = getTitleColor(avg100, useGPAMode, avgGPA);
                 let rightUp = titleRow.querySelector('.layout-row-right .layout-vertical-up');
-                if (rightUp) rightUp.textContent = avgGPA !== null ? formatNumber(avgGPA, 2) : '-.--';
+                if (rightUp) rightUp.textContent = avgGPA !== null ? avgGPA.toFixed(3) : '-.--';
                 let rightDown = titleRow.querySelector('.layout-row-right .layout-vertical-down');
                 if (rightDown) rightDown.textContent = avg100 !== null ? formatNumber(avg100, 1) : '-.--';
 
@@ -522,7 +615,7 @@
                 if (creditUp) {
                     let totalCredit = 0;
                     allCourseData.forEach(c => {
-                        if (isEarnedCredit(c.score)) totalCredit += c.credit;
+                        if (isEarnedCredit(c.score, c.courseName)) totalCredit += c.credit;
                     });
                     creditUp.textContent = formatNumber(totalCredit, 1);
                 }
@@ -561,8 +654,9 @@
                         input.addEventListener('input', recalculateAll);
                         input.addEventListener('click', e => e.stopPropagation());
                     } else if (LETTER_GRADES.includes(currentScore)) {
+                        let gradeOptions = LETTER_GRADES;
                         let selectHtml = `<select class="sim-input" style="width: 60px;">`;
-                        LETTER_GRADES.forEach(opt => {
+                        gradeOptions.forEach(opt => {
                             let selected = opt === currentScore ? 'selected' : '';
                             selectHtml += `<option value="${opt}" ${selected}>${opt}</option>`;
                         });
@@ -720,18 +814,20 @@
             block.querySelectorAll('.course-row .layout-row').forEach(row => {
                 let score = getScoreFromRow(row);
                 let credit = getCreditFromRow(row);
-                courseData.push({ credit, score });
+                let courseName = getCourseNameFromRow(row);
+                courseData.push({ credit, score, courseName });
 
                 // 分布统计
-                if (typeof score === 'number') {
-                    if (score < 60) distData[0]++;
-                    else if (score < 70) distData[1]++;
-                    else if (score < 80) distData[2]++;
-                    else if (score < 90) distData[3]++;
+                let score100 = scoreTo100(score, courseName);
+                if (typeof score100 === 'number') {
+                    if (score100 < 60) distData[0]++;
+                    else if (score100 < 70) distData[1]++;
+                    else if (score100 < 80) distData[2]++;
+                    else if (score100 < 90) distData[3]++;
                     else distData[4]++;
                 }
 
-                let gpa = scoreToGPA(score);
+                let gpa = scoreToGPA(score, courseName);
                 if (gpa !== null && credit > 0) {
                     semWeighted += gpa * credit;
                     semCredits += credit;
@@ -741,12 +837,12 @@
             let avgGPA = calcWeightedGPA(courseData);
             if (semCredits > 0) {
                 labels.push(semName);
-                dataGPA.push(avgGPA !== null ? avgGPA.toFixed(2) : 0);
+                dataGPA.push(avgGPA !== null ? avgGPA.toFixed(3) : 0);
                 dataCredits.push(semCredits);
 
                 totalWeighted += semWeighted;
                 totalCredits += semCredits;
-                dataCumGPA.push((totalWeighted / totalCredits).toFixed(2));
+                dataCumGPA.push((totalWeighted / totalCredits).toFixed(3));
             }
         });
 
@@ -890,6 +986,52 @@
             box-shadow: 0 4px 12px rgba(0,0,0,0.2);
             height: 300px;
         }
+        #gm-conversion-settings {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 10000;
+            padding: 24px;
+            background: rgba(0, 0, 0, .55);
+        }
+        #gm-conversion-settings.visible {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .gm-settings-dialog {
+            width: min(720px, 100%);
+            max-height: 90vh;
+            overflow: auto;
+            box-sizing: border-box;
+            padding: 38px 48px;
+            border: 1px solid #555;
+            border-radius: 28px;
+            background: #202020;
+            color: #f4f4f4;
+            box-shadow: 0 16px 48px rgba(0, 0, 0, .55);
+        }
+        .gm-settings-dialog h3 { margin: 0 0 34px; font-size: 30px; }
+        .gm-settings-intro { margin: -20px 0 26px; color: #bbb; }
+        .gm-conversion-mode { margin: 0 0 28px; padding: 0; border: 0; }
+        .gm-conversion-mode legend { margin-bottom: 18px; color: #c7c7c7; font-size: 22px; }
+        .gm-conversion-mode label { display: inline-flex; align-items: center; margin-right: 24px; font-size: 19px; cursor: pointer; }
+        .gm-conversion-mode input { width: 20px; height: 20px; margin: 0 12px 0 0; accent-color: #b7e8fa; }
+        .gm-grade-grid-header, .gm-grade-inputs label { display: grid; grid-template-columns: 128px 1fr; align-items: center; gap: 8px; }
+        .gm-grade-grid-header { margin-bottom: 14px; color: #c7c7c7; font-size: 20px; }
+        .gm-grade-inputs { display: grid; gap: 12px; }
+        .gm-grade-inputs label { color: #eee; font-size: 20px; }
+        .gm-grade-inputs input { width: 100%; box-sizing: border-box; padding: 12px 15px; border: 2px solid #777; border-radius: 14px; background: #161616; color: #f5f5f5; font-size: 20px; }
+        .gm-grade-inputs input:focus { outline: none; border-color: #b7e8fa; box-shadow: 0 0 0 2px rgba(183, 232, 250, .2); }
+        .gm-settings-hint { color: #aaa; font-size: 13px; line-height: 1.5; }
+        .gm-settings-actions { display: flex; justify-content: flex-end; gap: 18px; margin: 28px -48px -38px; padding: 30px 48px; border-top: 1px solid #444; background: #2c2c2c; border-radius: 0 0 28px 28px; }
+        .gm-settings-actions button { padding: 10px 20px; border: 1px solid transparent; border-radius: 24px; background: transparent; color: #ddd; font-size: 18px; cursor: pointer; }
+        .gm-settings-actions [data-action="save"] { border-color: #b7e8fa; color: #b7e8fa; }
+        @media (max-width: 600px) {
+            .gm-settings-dialog { padding: 28px 20px; border-radius: 18px; }
+            .gm-grade-grid-header, .gm-grade-inputs label { grid-template-columns: 80px 1fr; }
+            .gm-settings-actions { margin: 24px -20px -28px; padding: 20px; border-radius: 0 0 18px 18px; }
+        }
     `);
 
     function addControls() {
@@ -933,6 +1075,79 @@
         toggleSim.title = '开启后可修改成绩进行模拟计算';
         toggleSim.onclick = toggleSimulation;
         controllerBar.appendChild(toggleSim);
+
+        let settingsButton = document.createElement('a');
+        settingsButton.id = 'gm-conversion-settings-toggle';
+        settingsButton.className = 'gm-btn';
+        settingsButton.innerHTML = '<span class="icon icon-setting"></span> 等级换算设置';
+        settingsButton.title = '为全部等级制成绩设置统一换算规则';
+        settingsButton.onclick = openConversionSettings;
+        controllerBar.appendChild(settingsButton);
+    }
+
+    function openConversionSettings() {
+        let modal = document.getElementById('gm-conversion-settings');
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.id = 'gm-conversion-settings';
+            modal.innerHTML = `
+                <div class="gm-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="gm-settings-title">
+                    <h3 id="gm-settings-title">自定义等级制转换</h3>
+                    <p class="gm-settings-intro">保存后，所有等级制课程都会按以下规则转换。</p>
+                    <fieldset class="gm-conversion-mode">
+                        <legend>转换方式</legend>
+                        <label><input type="radio" name="gm-conversion-mode" value="gpa"> 直接映射 GPA</label>
+                        <label><input type="radio" name="gm-conversion-mode" value="score"> 转换为百分制</label>
+                    </fieldset>
+                    <div class="gm-grade-grid-header"><span>等级</span><span id="gm-mapping-value-label">GPA（0–4）</span></div>
+                    <div id="gm-grade-inputs" class="gm-grade-inputs"></div>
+                    <p class="gm-settings-hint">百分制模式会按脚本中的百分制公式换算 GPA。设置保存在当前浏览器，并立即影响显示、配色、平均分、GPA 和图表。</p>
+                    <div class="gm-settings-actions"><button type="button" data-action="cancel">取消</button><button type="button" data-action="save">保存并应用</button></div>
+                </div>`;
+            document.body.appendChild(modal);
+            modal.addEventListener('click', event => {
+                if (event.target === modal || event.target.dataset.action === 'cancel') modal.classList.remove('visible');
+                if (event.target.dataset.action === 'save') saveConversionSettings(modal);
+            });
+            modal.addEventListener('change', event => {
+                if (event.target.name === 'gm-conversion-mode') renderConversionInputs(modal, event.target.value);
+            });
+        }
+        let mode = customConversionConfig.mode;
+        modal.querySelector(`input[name="gm-conversion-mode"][value="${mode}"]`).checked = true;
+        renderConversionInputs(modal, mode);
+        modal.classList.add('visible');
+    }
+
+    function renderConversionInputs(modal, mode) {
+        let valueLabel = modal.querySelector('#gm-mapping-value-label');
+        let inputs = modal.querySelector('#gm-grade-inputs');
+        valueLabel.textContent = mode === 'gpa' ? 'GPA（0–4）' : '百分制（0–100）';
+        inputs.innerHTML = LETTER_GRADE_ORDER.map(grade => {
+            let value = customConversionConfig.mapping[grade];
+            if (!Number.isFinite(value)) value = DEFAULT_GPA_MAPPING[grade];
+            return `<label><span>${grade}</span><input type="number" data-grade="${grade}" value="${value}" min="0" max="${mode === 'gpa' ? 4 : 100}" step="0.1"></label>`;
+        }).join('');
+    }
+
+    function saveConversionSettings(modal) {
+        let mode = modal.querySelector('input[name="gm-conversion-mode"]:checked').value;
+        let mapping = {};
+        let max = mode === 'gpa' ? 4 : 100;
+        let invalidGrades = [];
+        modal.querySelectorAll('#gm-grade-inputs input').forEach(input => {
+            let value = Number(input.value);
+            if (!Number.isFinite(value) || value < 0 || value > max) invalidGrades.push(input.dataset.grade);
+            else mapping[input.dataset.grade] = value;
+        });
+        if (invalidGrades.length) {
+            alert(`${invalidGrades.join('、')} 的数值无效，请填写 0–${max} 之间的数字。`);
+            return;
+        }
+        customConversionConfig = { enabled: true, mode, mapping };
+        localStorage.setItem(CUSTOM_CONVERSION_STORAGE_KEY, JSON.stringify(customConversionConfig));
+        modal.classList.remove('visible');
+        recalculateAll();
     }
 
     function restoreFooter() {
