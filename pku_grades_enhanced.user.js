@@ -38,6 +38,16 @@
     };
     let customConversionConfig = loadCustomConversionConfig();
 
+    function roundTo(value, decimals) {
+        let factor = Math.pow(10, decimals);
+        return Math.round((value + Number.EPSILON) * factor) / factor;
+    }
+
+    function percentageToGPA(score) {
+        if (score < 60) return null;
+        return roundTo(4 - 3 * Math.pow(100 - score, 2) / 1600, 2);
+    }
+
     function loadCustomConversionConfig() {
         try {
             let saved = JSON.parse(localStorage.getItem(CUSTOM_CONVERSION_STORAGE_KEY));
@@ -64,7 +74,7 @@
         let value = customConversionConfig.mapping[score];
         if (!Number.isFinite(value)) return null;
         if (customConversionConfig.mode === 'score') {
-            return { score: value, gpa: value >= 60 ? 4 - 3 * Math.pow(100 - value, 2) / 1600 : 0 };
+            return { score: value, gpa: percentageToGPA(value) ?? 0 };
         }
         return { score: gpaTo100(value), gpa: value };
     }
@@ -82,7 +92,7 @@
             if (!isNaN(n)) score = n;
             else return null;
         }
-        return score >= 60 ? 4 - 3 * Math.pow(100 - score, 2) / 1600 : null;
+        return percentageToGPA(score);
     }
 
     function gpaTo100(gpa) {
@@ -410,11 +420,7 @@
                 }
                 titleRightDiv.appendChild(downDiv);
             }
-            let displayGPA = upDiv.textContent.trim();
-            if (displayGPA === '-.--' || !displayGPA) {
-                displayGPA = avgGPA !== null ? avgGPA.toFixed(2) : '-.--';
-            }
-            upDiv.textContent = displayGPA;
+            upDiv.textContent = avgGPA !== null ? avgGPA.toFixed(3) : '-.--';
             downDiv.textContent = avg100 !== null ? formatNumber(avg100, 1) : '--.-';
         }
 
@@ -478,7 +484,7 @@
         let titleRightDiv = titleRow.querySelector('.layout-row-right .layout-vertical');
         if (titleRightDiv) {
             let upDiv = titleRightDiv.querySelector('.layout-vertical-up');
-            upDiv.textContent = avg100 !== null ? formatNumber(avgGPA, 2) : '-.--';
+            upDiv.textContent = avgGPA !== null ? avgGPA.toFixed(3) : '-.--';
             let downDiv = titleRightDiv.querySelector('.layout-vertical-down');
             if (!downDiv) {
                 downDiv = document.createElement('div');
@@ -576,7 +582,7 @@
                 titleRow.style.backgroundColor = getTitleColor(avg100, useGPAMode, avgGPA);
                 let rightUp = titleRow.querySelector('.layout-row-right .layout-vertical-up');
                 let rightDown = titleRow.querySelector('.layout-row-right .layout-vertical-down');
-                if (rightUp) rightUp.textContent = avgGPA !== null ? avgGPA.toFixed(2) : '-.--';
+                if (rightUp) rightUp.textContent = avgGPA !== null ? avgGPA.toFixed(3) : '-.--';
                 if (rightDown) rightDown.textContent = avg100 !== null ? formatNumber(avg100, 1) : '-.--';
 
                 // 更新学分
@@ -600,7 +606,7 @@
             if (titleRow) {
                 titleRow.style.backgroundColor = getTitleColor(avg100, useGPAMode, avgGPA);
                 let rightUp = titleRow.querySelector('.layout-row-right .layout-vertical-up');
-                if (rightUp) rightUp.textContent = avgGPA !== null ? formatNumber(avgGPA, 2) : '-.--';
+                if (rightUp) rightUp.textContent = avgGPA !== null ? avgGPA.toFixed(3) : '-.--';
                 let rightDown = titleRow.querySelector('.layout-row-right .layout-vertical-down');
                 if (rightDown) rightDown.textContent = avg100 !== null ? formatNumber(avg100, 1) : '-.--';
 
@@ -831,12 +837,12 @@
             let avgGPA = calcWeightedGPA(courseData);
             if (semCredits > 0) {
                 labels.push(semName);
-                dataGPA.push(avgGPA !== null ? avgGPA.toFixed(2) : 0);
+                dataGPA.push(avgGPA !== null ? avgGPA.toFixed(3) : 0);
                 dataCredits.push(semCredits);
 
                 totalWeighted += semWeighted;
                 totalCredits += semCredits;
-                dataCumGPA.push((totalWeighted / totalCredits).toFixed(2));
+                dataCumGPA.push((totalWeighted / totalCredits).toFixed(3));
             }
         });
 
